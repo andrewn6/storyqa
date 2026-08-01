@@ -68,10 +68,10 @@ class World:
         return None 
 
     def contents(self, container: str):
-        inside [o for o in OBJECTS if self.obj_container.get(o) == container)]
+        inside = [o for o in OBJECTS if self.obj_container.get(o) == container]
         return inside or None 
 
-    def loc(self, x: str) -> | None:
+    def loc(self, x: str) -> str | None:
         if x in PEOPLE:
             return self.person_loc[x]
         owner = self.holder.get(x)
