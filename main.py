@@ -46,10 +46,10 @@ META_PATH = os.path.join(CKPT_DIR, "storyqa.json")
 
 @dataclass 
 class World:
-    person_loc: dict 
-    item_loc: dict 
-    holder: dict 
-    obj_container: dict 
+    person_loc: dict[str,str] 
+    item_loc: dict[str,str] 
+    holder: dict[str,str]
+    obj_container: dict[str,str]
 
     @staticmethod 
     def random(rng: np.random.Generator) -> "World":
@@ -182,3 +182,119 @@ def make_question(rng: np.random.Generator, world: World, difficulty: int):
             inside = world.contents(c)
             qs.append((["what", "is", "in", "the", c, "?"], inside[0] if inside else "nothing"))
     return qs[int(rng.integers(len(qs)))]
+
+"""
+tokenization!
+"""
+
+_PUNCT = set(".?,")
+
+def tokenize(text: str) -> list[str]:
+    raw = text.lower().split()
+    out: list[str] = []
+    for w in raw:
+        if w in SPECIAL:
+            out.append(w)
+            continue 
+        if re.fullmatch(r"[.,?]+", w):
+            out.append(w)
+            continue
+        if w and w[-1] in _PUNCT:
+            out.append(w[:-1])
+            out.append(w[-1])
+        else:
+            out.append(w)
+    return out 
+
+def detokenize(tokens: list[str]) -> str:
+    out = ""
+    for t in tokens:
+        if t in _PUNCT:
+            out = out.rstrip() + t + " "
+        else:
+            out += t + " "
+    return out.strip()
+
+def encode(story_tokens: list[str], question_tokens: list[str], answer: str):
+    seq = ["[cls]"] + story_tokens + ["[sep]"] + question_tokens + ["[sep]"]
+    seq = seq[:CTX]
+    n_real = len(seq)
+    ids = [TOK2IDS[t] for t in seq]
+    seg = [0] * (len(story_tokens) + 2) [1] * (len(questions_tokens) + 1 )
+    seg = seg[:n_real]
+    if n_real < CTX:
+        ids += [PAD_IDX] * (CTX - n_real)
+        seg += [0] * (CTX - n_real)
+    label = ANS2ID[answer]
+    return ids, seg, label, seq 
+
+def sample_difficulty(rng: np.random.Generator, progress: float) -> int:
+    if progress < 0.25:
+        w = [0.8, 0.2, 0.0]
+    elif progress < 0.6:
+        w = [0.3, 0.5, 0.2]
+    else:
+        w = [0.1, 0.4, 0.5]
+    return int(rng.choice(3, p=w))
+
+def make_batch(rng: np.random.Generator, n: int, difficulty: int | None = None, progress: float = 0.0):
+    ids_b, seg_b, lab_b, seqs = [], [], [], []
+    for _ in range(n):
+        d = difficulty if difficulty is not None else sample_difficulty(rng, progress)
+        world, story = generate_story(rng, d)
+        qtoks, ans = make_question(rng, world, d)
+        ids, seg, lab, seq = encode(story, qtoks, ans)
+        ids_b.append(ids); seg_b.append(seg); lab_b.append(lab); seqs.append(seq)
+    return (np.array(ids_b, dtype=np.int32),
+            np.array(seg_b, dtype=np.int32),
+            np.array(lab_b, dtype=np.int32),
+            seqs)
+
+class Attention:
+   """
+   Scaled dot product self-attention 
+
+   My own notes:
+   Every token emits three vectors via learned projections
+   Q = X Wq, K = X Wk, V = X Wv
+
+   Attention scores measure how much token i "queries" token j:
+    scores[i, j] = (Q_i . K_j) / sqrt(d_head)
+    
+   We divide sqrt(d_head) so the dot products stay on a sensible scale;
+   
+   This is BIDIRECTIONAL (BERT-style): there is no causal mask, so every token
+    attends to every other token in both directions. The only masking is over
+    [pad] keys, which get a -1e9 score so they contribute 0 weight.
+
+    Multi-head: d_model is split into H heads of d_head = d_model / H. Each head
+    runs the above attention independently, letting the model attend to different
+    relations in parallel. Heads are then concatenated and projected back to d_model.
+   """  
+   def __init__(self, d_model: int, n_heads: int):
+       assert d_model % n_heads == 0 
+       self.n_heads = n_heads
+       self.d_head = d_model // n_heads
+       self.q = Linear(d_model, d_model)
+       self.k = Linear(d_model, d_model)
+       self.v = Linear(d_model, d_model)
+       self.o = Linear(d_model, d_model)
+       self.last_attn = None  # stored for `inspect`
+
+    def __call__(self, x: Tensor, key_mask: Tensor) -> Tensor:
+        B, T, C = x.shape 
+        H, Dh = self.n_heads, self.d_head
+        # project to Q, K, V then split each token into H heads (B, T, C) -> (B, H, t, Dh)
+        q = self.q(x).reshape(B, T, H, Dh).permute(0, 2, 1, 3)
+        k = self.k(x).reshape(B, T, H, Dh).permute(0, 2, 1, 3)
+        v = self.v(x).reshape(B, T, H, Dh).permute(0, 2, 1, 3)
+
+        scale = 1.0 / math.sqrt(Dh)
+        scores = (q @ k.permute(0, 1, 3, 2)) * scale 
+        scores = scores + key_mask 
+        attn = scores.softmax(axis=-1) # softmax over K (keys)
+        self.last_attn = attn 
+
+        out = attn @ v # weighted sum of values, B, H, T, Dh
+        out = out.permute(0, 2, 1, 3).reshape(B, T, C) # concat heads back to model
+        return self.o(out)
