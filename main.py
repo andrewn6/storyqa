@@ -298,3 +298,48 @@ class Attention:
         out = attn @ v # weighted sum of values, B, H, T, Dh
         out = out.permute(0, 2, 1, 3).reshape(B, T, C) # concat heads back to model
         return self.o(out)
+
+class MLP:
+    """
+    Position-wise feed-forward sublayer: expand -> GELU -> project back.
+
+    Notes for self: attention mixes information across tokens thru heads; MLP thinks on each tokens representation indiviudally. Position wise. The same tiny net is applied independently to every token, with no looking at neighbors.
+
+    Two linear layers with a nonlinearity between them.
+
+    Without the activation, two linear layesr would collapse into one. So we need a nonlinearity. GeLu is smooth ReLU it passes large positives thru, zeroes out large negatives, adn rounds the corner near zero unlike Relus sharpness. which trains better in transformers.
+    """
+    def __init__(self, d_model: int, d_ff: int):
+        self.fc1 = Linear(d_model, d_ff)
+        self.fc2 = Linear(d_ff, d_model)
+
+    def __call__(self, x: Tensor) -> Tensor:
+        return self.fc2(self.fc1(x).gelu())
+
+class Block:
+    """
+    One pre-norm transformer block: self attention + MLP in a residual
+
+    x = x + Attn(layernorm(x)) -- self attention sublayer 
+    x = x + MLP(LayerNorm(x))
+
+    Two ideas make this work:
+
+    LayerNorm ("pre-norm"): we normalize it before feeding it into each sublayer.
+    It keeps activatiobs on a stable scale thru all 6 layers, so gradients flow well/training is stable.
+
+    Residual connections the (" + x"): each sublayers output is added to its input, so information and gradients can bypass the sublayer entirely. This makes deep stacks easy to optimize -- the model starts near an identity map and learns small corrections on top.
+
+    The order matters: this block does attention first (gather context) then the MLP (transforms that gathered context). Both add to x, it does not overwrite it.
+    """
+    def __init__(self, d_model: int, n_heads: int, d_ff: int): 
+        self.ln1 = LayerNorm(d_model)
+        self.attn = MultiHeadAttention(d_model, n_heads)
+        self.ln2 = LayerNorm(d_model)
+        self.mlp = MLP(d_model, d_ff)
+
+    def __call__(self, x: Tensor, key_mask: Tensor) -> Tensor:
+        x = x + self.attn(self.ln1(x), key_mask)
+        x = x + self.mlp(self.ln2(x))
+        return x 
+
