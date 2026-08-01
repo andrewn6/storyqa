@@ -1,0 +1,58 @@
+build a small bidirectional transformer encoder in one file, `train.py`, using tinygrad for the model and numpy for data generation and batching.
+
+the model reads synthetic stories and answers questions about entities, objects, locations, ownership, and changing world state.
+
+example:
+
+```text
+[cls] alice picked up the key . alice moved to the garden . [sep] where is the key ? [sep]
+answer: garden
+```
+
+requirements:
+
+* tinygrad for tensors, layers, attention, autograd, loss, and adamw
+* numpy allowed for dataset generation, tokenization, batching, and checkpoint metadata
+* no pytorch, jax, tensorflow, mlx, or transformers
+* everything in one runnable file
+* generate all training data procedurally from a valid internal world-state simulator
+* include direct lookup, distractors, overwritten facts, object transfers, ownership, and two-hop reasoning
+
+model:
+
+* bert-style bidirectional transformer encoder
+* word-level tokenizer with `[pad]`, `[cls]`, `[sep]`, and `[mask]`
+* token, positional, and segment embeddings
+* pre-norm transformer blocks
+* multi-head self-attention without a causal mask
+* gelu mlp and residual connections
+* use the final `[cls]` representation to classify the answer token
+* `d_model=192`
+* `6` layers
+* `6` attention heads
+* context length `256`
+* roughly `3–8m` parameters
+
+training:
+
+* cross-entropy answer classification
+* exact-match accuracy
+* adamw
+* gradient clipping
+* learning-rate warmup and cosine decay
+* train and validation splits
+* curriculum from short direct questions to longer multi-hop stories
+* checkpoint save and resume
+
+commands:
+
+```bash
+METAL=1 python train.py train
+METAL=1 python train.py evaluate
+METAL=1 python train.py inspect
+```
+
+the inspect command should print the story, question, expected answer, prediction, and the `[cls]` attention weights for each layer and head.
+
+keep the implementation readable and architecturally proper. implement attention and transformer blocks directly using tinygrad. return complete runnable code with no placeholders.
+
