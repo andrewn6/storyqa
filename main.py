@@ -452,3 +452,22 @@ def load_ckpt(model) -> tuple[int, float]:
     with open(META_PATH) as f:
         meta = json.load(f)
     return int(meta["step"]), float(meta["best_acc"])
+
+@dataclass 
+class EvalResult:
+    acc: float 
+    loss: float
+
+def evaluate(model, rng: np.random.Generator, n_batches: int, batch: int) -> EvalResult:
+    """
+    Average exact match accuracy and loss over batches of diff-2 (hardest)
+    """
+    acc_sum, loss_sum = 0.0, 0.0
+    for _ in range(n_batches):
+        ids, segs, labs, _ = make_batch(rng, batch, difficulty=2)
+        out = model(Tensor(ids), Tensor(segs), Tensor(build_key_mask(ids)))
+        loss = out.sparse_categorical_crossentropy(Tensor(labs))
+        pred = out.argmax(axis=-1).numpy()
+        acc_sum += float((pred == labs).mean())
+        loss_sum += float(loss.numpy())
+    return EvalResult(acc=acc_sum / n_batches, loss=loss_sum / n_batches)
