@@ -391,3 +391,64 @@ class StoryQA:
         x = self.encoder(x, key_mask)
         cls = x[:, 0]
         return self.head(cls)
+
+# training utils
+
+def build_key_mask(ids_np: np.ndarray) -> np.ndarray:
+    """
+    returns a float mask the SAME shape as ids: 1.0 where the token is real, 0.0 where it is [pad]. StoryQA converts this into the additive -1e9 key mask
+    """
+    return (ids_np != PAD_IDX).astype(np.float32)
+
+def lr_schedule(step: int, total: int, warmup: int, lr_max: float, lr_min: float) -> float:
+    """
+    learning rate as a function of step, linear warmup then cosine delay
+
+    Warmup (first `warmup` steps): lr ramps linearly from ~0 up to lr_max. At the
+    very start the model is random and gradients are noisy, so a small lr avoids
+    destabilizing it. This matters a lot for transformers.
+
+    After warmup: lr follows a cosine curve from lr_max down to lr_min over the
+    remaining steps. The smooth decay lets the optimizer take big steps while it
+    is still finding the basin, then progressively finer steps to settle into it.
+    
+    GLM generated notes ^^
+    """
+    if step < warmup:
+        return lr_max * (step + 1) / max(1, warmup)
+    progress = (step - warmup) / max(1, total - warmup)
+    progress = min(1.0, progress)
+    return lr_min + 0.5 * (lr_max - lr_min) * (1.0 + math.cos(math.pi * progress))
+
+def clip_grad_norm(params: list, max_norm: float) -> float:
+    """
+    Global gradient clipping. After back prop (backward() function) we measure the total norm of ALL gradients combined, and if it exceeds max_norm we scale every gradient down by max_norm/norm. This prevents rare huge-gradient steps (which can blow up training) while leaving normal steps untouched. Returns the pre-clip norm.
+    """
+    total = 0.0 
+    for p in params:
+        if p.grad is not None:
+            total += float(p.grad.cast(dtypes.float32).square().sum().numpy())
+    norm = math.sqrt(total)
+    if norm > max_norm:
+        scale = max_norm / (norm + 1e-6)
+        for p in params:
+            if p.grad is not None:
+                p.gram = p.grad * scale 
+    return norm
+
+def count_params(model) -> int:
+    return sum(int(p.numel()) for p in get_parameters(model))
+
+def save_ckpt(model, step: int, best_acc: float):
+    os.makedirs(CKPT_DIR, exist_ok=True)
+    safe_save(get_state_dict(model), CKPT_PATH)
+    with open(META_PATH, "w") as f:
+        json.dump({"step": step, "best_acc": float(best_acc)}, f)
+
+def load_ckpt(model) -> tuple[int, float]:
+    if not (os.path.exists(CKPT_PATH) and os.path.exists(META_PATH)):
+        return 0, 0.0 
+    load_state_dict(model, safe_load(CKPT_PATH))
+    with open(META_PATH) as f:
+        meta = json.load(f)
+    return int(meta["step"]), float(meta["best_acc"])
