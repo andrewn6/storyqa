@@ -343,3 +343,51 @@ class Block:
         x = x + self.mlp(self.ln2(x))
         return x 
 
+class Encoder:
+    """
+    A stack of N transformer blocks plus a final LayerNorm.
+
+    Why a stack? A single block can attend to tokens and mix them once, but reasoning about a story is iterative: layer 1 finds "who is where", layer 2 composes that into relations, deeper layers chain facts together (e.g object -> container -> locations, deeper layers chain facts together). Each block refines the represnation builtb y the one below it.
+
+    Why a final LayerNorm? Because every block is pre-norm, the last block's output is un-normalized (its internal LN feeds the sublayers, not the output). We add one LN at the end so the represenation handed to the classification head has a stable, normalized scale.
+    """
+    def __init__(self, d_model: int, n_layers: int, n_heads: int, d_ff: int):
+        self.blocks = [Block(d_model, n_heads, d_ff) for _ in range(n_layers)]
+        self.ln_f = LayerNorm(d_model)
+
+    def __call__(self, x: Tensor, key_mask: Tensor) -> Tensor:
+        for b in self.blocks:
+            x = b(x, key_mask)
+        return self.ln_f(x)
+
+class StoryQA:
+    """
+    Full BERT-Style encoder for our model!
+
+    The flow:
+
+    1. Embedding: each input token id becomes a vector by *summing* three embeddings:
+        token_emb(id) -- what the word is.
+        pos_emb(position) -- where in the sequence it is.
+        seg_emb(segment) -- is it part of the STORY (0) or the QUESTION (1)
+    Learned (not sinusoidal) embeddings, all of size d_model.
+
+    2. Encoder: 6 pre-norm transformer blocks (bidirectional attention, no causal mask). The [cls] token at the position 0 has no meaning of its own, but beacuse attention is bidirectional it can gather information from the entire story/question - so by the end its representation summarizes the whole input.
+
+    3. CLS Head, we can the final hidden state of [cls] at position 0, and projecti t to one logit per candidate answer token(locations, people, objects, containers, nobody/nothing). The argmax is the predicted answer.
+    """
+    def __init__(self, vocab_size: int, n_classes: int):
+        self.tok_emb = Embedding(vocab_size, D_MODEL)
+        self.pos_emb = Embedding(CTX, D_MODEL)
+        self.seg_emb = Embedding(2, D_MODEL)
+        self.encoder = Encoder(D_MODEL, N_LAYERS, N_HEADS, D_FF)
+        self.head = Linear(D_MODEL, n_classes)
+
+    def __call__(self, ids: Tensor, segs: Tensor, pad_mask: Tensor) -> Tensor:
+        B, T = ids.shape 
+        pos = Tensor.arange(T)
+        x = self.tok_emb(ids) + self.pos_emb(pos) + self.seg_emb(segs)
+        key_mask = (pad_mask * -1e9).reshape(B, 1, 1, T)
+        x = self.encoder(x, key_mask)
+        cls = x[:, 0]
+        return self.head(cls)
