@@ -1,0 +1,38 @@
+version: 1
+
+# host-local rootfs name, not an oci ref. bake it on the gpu host with
+# qemu-bake-cuda-rootfs.sh <driver-version> and drop it in the agent images dir.
+image: cuda-12
+
+resources:
+  cpus: 8
+  memory: 32GB
+  storage: 20GB
+  gpu: 1
+  # uncomment to pin a card model (case-insensitive substring match)
+  # gpu_kind: a100
+  max_runtime: 8h
+  idle_timeout: 30m
+
+# content-addressed setup layers so the python + deps install is not repaid every boot
+cache:
+  enabled: true
+
+files:
+  - path: train.py
+    source: ./train.py
+
+setup:
+  - run: curl -LsSf https://astral.sh/uv/install.sh | sh
+    cache: true
+  - run: /root/.local/bin/uv python install 3.14
+    cache: true
+  - run: /root/.local/bin/uv venv --python 3.14 && /root/.local/bin/uv pip install tinygrad numpy
+    cache: true
+
+# training is detached on purpose. startup_timeout bounds setup + run together with a ~55s
+# ceiling, so a foreground train would tear the environment down mid-run.
+run: mkdir -p ckpts logs && CUDA=1 nohup .venv/bin/python train.py train > logs/train.log 2>&1 &
+
+startup_timeout: 55s
+workspace: /workspace
