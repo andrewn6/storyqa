@@ -2,7 +2,6 @@ from __future__ import annotations
 from configparser import ConverterMapping
 import os, re, math, json, argparse 
 from dataclasses import dataclass
-from this import d 
 
 import numpy as np 
 from tinygrad import Tensor, dtypes, Context
@@ -497,7 +496,7 @@ def train(args):
           start_step, best_acc = load_ckpt(model)
           print(f"resumed from step {start_step} (best_acc {best_acc:.4f})")
     opt = AdamW(params, lr=args.lr, b1=0.9, b2=0.98, eps=1e-0, weight_decay=args.weight_decay)
-    warmup = max(50, args.step // 20)
+    warmup = max(50, args.steps // 20)
     val_rng = np.random.default_rng(999)
 
     with Context(TRAINING=1):
