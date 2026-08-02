@@ -118,7 +118,7 @@ def _valid_actions(world: World, rng: np.random.Generator, difficulty: int):
             for c in CONTAINERS:
                 if world.loc(c) == pl and world.contents(c) is None and it in OBJECTS:
                     acts.append(("put_in", p, it, c))
-                if world.loc(c) == pl and worlds.holds(p) is None and world.contents(c):
+                if world.loc(c) == pl and world.holds(p) is None and world.contents(c):
                     acts.append(("take_from", p, world.contents(c)[0], c))
     return acts 
 
@@ -140,8 +140,9 @@ def _apply(world: World, act, rng: np.random.Generator) -> list[str]:
         world.item_loc[it] = world.loc(p)
         return [p, "put", "down", "the", it, "."]
     if kind == "give":
-        _ p, q, it = act 
+        _, p, q, it = act
         world.holder[it] = q
+        return [p, "gave", "the", it, "to", q, "."]
     if kind == "put_in":
         _, p, it, c = act
         world.holder[it] = None
@@ -220,7 +221,7 @@ def encode(story_tokens: list[str], question_tokens: list[str], answer: str):
     seq = seq[:CTX]
     n_real = len(seq)
     ids = [TOK2IDS[t] for t in seq]
-    seg = [0] * (len(story_tokens) + 2) [1] * (len(questions_tokens) + 1 )
+    seg = [0] * (len(story_tokens) + 2) + [1] * (len(question_tokens) + 1)
     seg = seg[:n_real]
     if n_real < CTX:
         ids += [PAD_IDX] * (CTX - n_real)
@@ -251,35 +252,35 @@ def make_batch(rng: np.random.Generator, n: int, difficulty: int | None = None, 
             seqs)
 
 class Attention:
-   """
-   Scaled dot product self-attention 
+    """
+    Scaled dot product self-attention 
 
-   My own notes:
-   Every token emits three vectors via learned projections
-   Q = X Wq, K = X Wk, V = X Wv
+    My own notes:
+    Every token emits three vectors via learned projections
+    Q = X Wq, K = X Wk, V = X Wv
 
-   Attention scores measure how much token i "queries" token j:
+    Attention scores measure how much token i "queries" token j:
     scores[i, j] = (Q_i . K_j) / sqrt(d_head)
     
-   We divide sqrt(d_head) so the dot products stay on a sensible scale;
+    We divide sqrt(d_head) so the dot products stay on a sensible scale;
    
-   This is BIDIRECTIONAL (BERT-style): there is no causal mask, so every token
+    This is BIDIRECTIONAL (BERT-style): there is no causal mask, so every token
     attends to every other token in both directions. The only masking is over
     [pad] keys, which get a -1e9 score so they contribute 0 weight.
 
     Multi-head: d_model is split into H heads of d_head = d_model / H. Each head
     runs the above attention independently, letting the model attend to different
     relations in parallel. Heads are then concatenated and projected back to d_model.
-   """  
-   def __init__(self, d_model: int, n_heads: int):
-       assert d_model % n_heads == 0 
-       self.n_heads = n_heads
-       self.d_head = d_model // n_heads
-       self.q = Linear(d_model, d_model)
-       self.k = Linear(d_model, d_model)
-       self.v = Linear(d_model, d_model)
-       self.o = Linear(d_model, d_model)
-       self.last_attn = None  # stored for `inspect`
+    """  
+    def __init__(self, d_model: int, n_heads: int):
+        assert d_model % n_heads == 0 
+        self.n_heads = n_heads
+        self.d_head = d_model // n_heads
+        self.q = Linear(d_model, d_model)
+        self.k = Linear(d_model, d_model)
+        self.v = Linear(d_model, d_model)
+        self.o = Linear(d_model, d_model)
+        self.last_attn = None  # stored for `inspect`
 
     def __call__(self, x: Tensor, key_mask: Tensor) -> Tensor:
         B, T, C = x.shape 
@@ -334,7 +335,7 @@ class Block:
     """
     def __init__(self, d_model: int, n_heads: int, d_ff: int): 
         self.ln1 = LayerNorm(d_model)
-        self.attn = MultiHeadAttention(d_model, n_heads)
+        self.attn = Attention(d_model, n_heads)
         self.ln2 = LayerNorm(d_model)
         self.mlp = MLP(d_model, d_ff)
 
@@ -471,3 +472,149 @@ def evaluate(model, rng: np.random.Generator, n_batches: int, batch: int) -> Eva
         acc_sum += float((pred == labs).mean())
         loss_sum += float(loss.numpy())
     return EvalResult(acc=acc_sum / n_batches, loss=loss_sum / n_batches)
+
+def run_eval(model, rng: np.random.Generator, n_batches: int, batch: int) -> EvalResult:
+    acc_sum, loss_sum = 0.0, 0.0 
+    for _ in range(n_batches):
+        ids, segs, labs, _ = make_batch(rng, batch, difficulty=2)
+        out = model(Tensor(ids), Tensor(segs), Tensor(build_key_mask(ids)))
+        loss = out.sparse_categorical_crossentropy(Tensor(labs))
+        pred = out.argmax(axis=-1).numpy()
+        acc_sum += float((pred == labs).mean())
+        loss_sum += float(loss.numpy())
+    return EvalResult(acc=acc_sum / n_batches, loss=loss_sum / n_batches)
+
+def train(args):
+    rng = np.random.default_rng(args.seed)
+    model = StoryQA(VOCAB_SIZE, N_CLASSES)
+    params = get_parameters(model)
+    print(f"params: {count_params(model)/1e6:.2f}m | vocab {VOCAB_SIZE} | classes {N_CLASSES} | ctx {CTX}")
+
+
+    
+    start_step, best_acc = 0, 0.0 
+    if args.resume and os.path.exists(CKPT_PATH):
+          start_step, best_acc = load_ckpt(model)
+          print(f"resumed from step {start_step} (best_acc {best_acc:.4f})")
+    opt = AdamW(params, lr=args.lr, b1=0.9, b2=0.98, eps=1e-0, weight_decay=args.weight_decay)
+    warmup = max(50, args.step // 20)
+    val_rng = np.random.default_rng(999)
+
+    with Context(TRAINING=1):
+        for step in range(start_step, args.steps):
+            progress = step / max(1, args.steps)
+            lr = lr_schedule(step, args.steps, warmup, args.lr, args.lr * 0.01)
+            opt.lr.assign(Tensor([lr], device=opt.lr.device))
+
+            ids, segs, labs, _ = make_batch(rng, args.batch, progress=progress)
+            out = model(Tensor(ids), Tensor(segs), Tensor(build_key_mask(ids)))
+            loss = out.sparse_categorical_crossentropy(Tensor(labs))
+
+            opt.zero_grad()
+            loss.backward()
+            clip_grad_norm(params, args.clip)
+            opt.step()
+
+            if step % args.log_every == 0 or step == args.steps - 1:
+                pred = out.argmax(axis=-1).numpy()
+                acc = float((pred == labs).mean())
+                print(f"step {step:5d} | lr {lr:.2e} | loss {float(loss.numpy()):.4f} | acc {acc:.3f}")
+            
+            if (step + 1) % args.eval_every == 0 or step == args.steps - 1:
+                res = run_eval(model, val_rng, n_batches=20, batch=args.batch)
+                print(f"  -> val acc {res.acc:.4f} | val loss {res.loss:.4f}")
+                if res.acc > best_acc:
+                    best_acc = res.acc 
+                save_ckpt(model, step + 1, best_acc)
+
+    save_ckpt(model, args.steps, best_acc)
+    print(f"done. best val acc {best_acc}:.4f")
+
+def evaluate(args):
+    rng = np.random.default_rng(2024)
+    model = StoryQA(VOCAB_SIZE, N_CLASSES)
+    if os.path.exists(CKPT_PATH):
+        load_ckpt(model)
+        print("loaded checkpoint")
+    res = run_eval(model, rng, n_batches=args.n_batches, batch=args.batch) 
+    print(f"val acc {res.acc:.4f} | val loss {res.loss:.4f} over {args.n_batches * args.batch} examples")
+
+def _print_attn(model, seq: list[str]):
+    real = [i for i in range(len(seq)) if seq[i] != "[pad]"]
+    toks = [seq[i] for i in real]
+    print("\n[cls] attention (top attended tokens per head):")
+    for li, block in enumerate(model.encoder.blocks):
+        attn = block.attn.last_attn
+        if attn is None:
+            continue
+        w = attn[0, :, :].numpy()
+        print(f"layer {li}")
+        for h in range(w.shape[0]):
+            row = [(toks[j], float(w[h, real[j]])) for j in range(len(real))]
+            row.sort(key=lambda r: r[1], reverse=True)
+            top = row[:6]
+            print(f" head{h}: " + " ".join(f"{t}:{v:.2f}" for t, v in top))
+
+
+
+def inspect(args):
+    rng = np.random.default_rng(args.seed)
+    model = StoryQA(VOCAB_SIZE, N_CLASSES)
+    if os.path.exists(CKPT_PATH):
+        load_ckpt(model)
+        print("loaded checkpoint")
+    ids, segs, labs, seqs = make_batch(rng, args.n, difficulty=args.difficulty)
+    out = model(Tensor(ids), Tensor(segs), Tensor(build_key_mask(ids)))
+    preds = out.argmax(axis=-1).numpy()
+
+    for i in range(args.n):
+        seq = seqs[i]
+        sep1 = seq.index("[sep]")
+        sep2 = len(seq) - 1 - seq[::-1].index("[sep]")
+        story = seq[1:sep1]
+        question = seq[sep1 + 1:sep2]
+        expected = ANSWER_TOKENS[labs[i]]
+        predicted = ANSWER_TOKENS[preds[i]]
+        print("=" * 70)
+        print(f"STORY:     {detokenize(story)}")
+        print(f"QUESTION:  {detokenize(question)}")
+        print(f"EXPECTED:  {expected}")
+        print(f"PREDICTED: {predicted}  {'OK' if predicted == expected else 'WRONG'}")
+        one_ids = np.array([ids[i]], dtype=np.int32)
+        one_segs = np.array([segs[i]], dtype=np.int32)
+        model(Tensor(one_ids), Tensor(one_segs), Tensor(build_key_mask(one_ids)))
+        _print_attn(model, seq)
+
+def main():
+    p = argparse.ArgumentParser(description="story-qa transformer encoder (tinygrad)")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    pt = sub.add_parser("train")
+    pt.add_argument("--steps", type=int, default=2000)
+    pt.add_argument("--batch", type=int, default=64)
+    pt.add_argument("--lr", type=float, default=3e-4)
+    pt.add_argument("--weight-decay", type=float, default=0.01)
+    pt.add_argument("--clip", type=float, default=1.0)
+    pt.add_argument("--seed", type=int, default=0)
+    pt.add_argument("--log-every", type=int, default=50)
+    pt.add_argument("--eval-every", type=int, default=200)
+    pt.add_argument("--resume", action="store_true")
+    pt.set_defaults(func=train)
+
+    pe = sub.add_parser("evaluate")
+    pe.add_argument("--batch", type=int, default=64)
+    pe.add_argument("--n-batches", type=int, default=50)
+    pe.set_defaults(func=evaluate)
+
+    pi = sub.add_parser("inspect")
+    pi.add_argument("--n", type=int, default=3)
+    pi.add_argument("--seed", type=int, default=7)
+    pi.add_argument("--difficulty", type=int, default=2, choices=[0, 1, 2])
+    pi.set_defaults(func=inspect)
+
+    args = p.parse_args()
+    args.func(args)
+
+if __name__ == "__main__":
+    main()
+
