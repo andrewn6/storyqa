@@ -511,7 +511,6 @@ def train(args):
 
         opt.zero_grad()
         loss.backward()
-        clip_grad_norm(params, args.clip)
         opt.step()
 
         if step % args.log_every == 0 or step == args.steps - 1:
