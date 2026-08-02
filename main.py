@@ -433,7 +433,7 @@ def clip_grad_norm(params: list, max_norm: float) -> float:
         scale = max_norm / (norm + 1e-6)
         for p in params:
             if p.grad is not None:
-                p.gram = p.grad * scale 
+                p.grad = p.grad * scale
     return norm
 
 def count_params(model) -> int:
@@ -485,6 +485,7 @@ def run_eval(model, rng: np.random.Generator, n_batches: int, batch: int) -> Eva
 
 def train(args):
     rng = np.random.default_rng(args.seed)
+    Tensor.training = True
     model = StoryQA(VOCAB_SIZE, N_CLASSES)
     params = get_parameters(model)
     print(f"params: {count_params(model)/1e6:.2f}m | vocab {VOCAB_SIZE} | classes {N_CLASSES} | ctx {CTX}")
@@ -495,7 +496,7 @@ def train(args):
     if args.resume and os.path.exists(CKPT_PATH):
           start_step, best_acc = load_ckpt(model)
           print(f"resumed from step {start_step} (best_acc {best_acc:.4f})")
-    opt = AdamW(params, lr=args.lr, b1=0.9, b2=0.98, eps=1e-0, weight_decay=args.weight_decay)
+    opt = AdamW(params, lr=args.lr, b1=0.9, b2=0.98, eps=1e-8, weight_decay=args.weight_decay)
     warmup = max(50, args.steps // 20)
     val_rng = np.random.default_rng(999)
 
