@@ -4,7 +4,7 @@ import os, re, math, json, argparse
 from dataclasses import dataclass
 
 import numpy as np 
-from tinygrad import Tensor, dtypes, Context
+from tinygrad import Tensor, dtypes
 from tinygrad.nn import Linear, LayerNorm, Embedding 
 from tinygrad.nn.optim import AdamW 
 from tinygrad.nn.state import get_parameters, get_state_dict, load_state_dict, safe_save, safe_load 
@@ -499,32 +499,31 @@ def train(args):
     warmup = max(50, args.steps // 20)
     val_rng = np.random.default_rng(999)
 
-    with Context(TRAINING=1):
-        for step in range(start_step, args.steps):
-            progress = step / max(1, args.steps)
-            lr = lr_schedule(step, args.steps, warmup, args.lr, args.lr * 0.01)
-            opt.lr.assign(Tensor([lr], device=opt.lr.device))
+    for step in range(start_step, args.steps):
+        progress = step / max(1, args.steps)
+        lr = lr_schedule(step, args.steps, warmup, args.lr, args.lr * 0.01)
+        opt.lr.assign(Tensor([lr], device=opt.lr.device))
 
-            ids, segs, labs, _ = make_batch(rng, args.batch, progress=progress)
-            out = model(Tensor(ids), Tensor(segs), Tensor(build_key_mask(ids)))
-            loss = out.sparse_categorical_crossentropy(Tensor(labs))
+        ids, segs, labs, _ = make_batch(rng, args.batch, progress=progress)
+        out = model(Tensor(ids), Tensor(segs), Tensor(build_key_mask(ids)))
+        loss = out.sparse_categorical_crossentropy(Tensor(labs))
 
-            opt.zero_grad()
-            loss.backward()
-            clip_grad_norm(params, args.clip)
-            opt.step()
+        opt.zero_grad()
+        loss.backward()
+        clip_grad_norm(params, args.clip)
+        opt.step()
 
-            if step % args.log_every == 0 or step == args.steps - 1:
-                pred = out.argmax(axis=-1).numpy()
-                acc = float((pred == labs).mean())
-                print(f"step {step:5d} | lr {lr:.2e} | loss {float(loss.numpy()):.4f} | acc {acc:.3f}")
-            
-            if (step + 1) % args.eval_every == 0 or step == args.steps - 1:
-                res = run_eval(model, val_rng, n_batches=20, batch=args.batch)
-                print(f"  -> val acc {res.acc:.4f} | val loss {res.loss:.4f}")
-                if res.acc > best_acc:
-                    best_acc = res.acc 
-                save_ckpt(model, step + 1, best_acc)
+        if step % args.log_every == 0 or step == args.steps - 1:
+            pred = out.argmax(axis=-1).numpy()
+            acc = float((pred == labs).mean())
+            print(f"step {step:5d} | lr {lr:.2e} | loss {float(loss.numpy()):.4f} | acc {acc:.3f}")
+
+        if (step + 1) % args.eval_every == 0 or step == args.steps - 1:
+            res = run_eval(model, val_rng, n_batches=20, batch=args.batch)
+            print(f"  -> val acc {res.acc:.4f} | val loss {res.loss:.4f}")
+            if res.acc > best_acc:
+                best_acc = res.acc
+            save_ckpt(model, step + 1, best_acc)
 
     save_ckpt(model, args.steps, best_acc)
     print(f"done. best val acc {best_acc}:.4f")
