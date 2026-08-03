@@ -545,7 +545,7 @@ def _print_attn(model, seq: list[str]):
         attn = block.attn.last_attn
         if attn is None:
             continue
-        w = attn[0, :, :].numpy()
+        w = attn[0, :, 0, :].numpy()
         print(f"layer {li}")
         for h in range(w.shape[0]):
             row = [(toks[j], float(w[h, real[j]])) for j in range(len(real))]
