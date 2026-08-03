@@ -154,15 +154,27 @@ def _apply(world: World, act, rng: np.random.Generator) -> list[str]:
         return [p, "took", "the", it, "from", "the", c, "."]
     raise ValueError(kind)
 
+def _preamble(world: World) -> list[str]:
+    """
+    initial world state as declarative sentences, so every question is
+    answerable from the input alone. prepended to every story.
+    """
+    toks: list[str] = []
+    for p in PEOPLE:
+        toks += [p, "is", "in", "the", world.person_loc[p], "."]
+    for it in OBJECTS + CONTAINERS:
+        toks += ["the", it, "is", "in", "the", world.item_loc[it], "."]
+    return toks
+
 def generate_story(rng: np.random.Generator, difficulty: int):
     world = World.random(rng)
+    tokens: list[str] = _preamble(world)
     lo, hi = DIFF_LEN[difficulty]
     n = int(rng.integers(lo, hi + 1))
-    tokens: list[str] = [] 
     for _ in range(n):
         acts = _valid_actions(world, rng, difficulty)
         if not acts:
-            break 
+            break
         tokens += _apply(world, acts[int(rng.integers(len(acts)))], rng)
     return world, tokens
 
@@ -526,7 +538,7 @@ def train(args):
             save_ckpt(model, step + 1, best_acc)
 
     save_ckpt(model, args.steps, best_acc)
-    print(f"done. best val acc {best_acc}:.4f")
+    print(f"done. best val acc {best_acc:.4f}")
 
 def evaluate(args):
     rng = np.random.default_rng(2024)
